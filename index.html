@@ -1,0 +1,692 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <link rel="dns-prefetch" href="//xclycj.com" />
+  <link rel="preconnect" href="http://xclycj.com" />
+  <title>绿源三十年茶源结茶缘</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --accent: #e0bf84;
+      --text: rgba(255, 255, 255, 0.92);
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      overflow: hidden;
+      touch-action: manipulation;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    .stage {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(circle at 50% 45%, #191919 0%, #070707 66%, #000000 100%);
+      display: grid;
+      place-items: center;
+      isolation: isolate;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .video-bg {
+      position: absolute;
+      inset: -8%;
+      width: 116vw;
+      height: 116vh;
+      object-fit: cover;
+      background: #000;
+      filter: blur(22px) saturate(1.08) brightness(0.65);
+      transform: scale(1.16);
+      opacity: 0;
+      z-index: 1;
+      pointer-events: none;
+      transition: opacity 260ms ease;
+    }
+
+    .stage.bg-ready .video-bg {
+      opacity: 0.94;
+    }
+
+    .frost-layer {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.07), rgba(0, 0, 0, 0.36)),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.28));
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .video-main {
+      position: absolute;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      background: transparent;
+      z-index: 3;
+      filter: drop-shadow(0 12px 22px rgba(0, 0, 0, 0.45));
+    }
+
+    .start-btn {
+      position: absolute;
+      z-index: 6;
+      bottom: calc(44px + env(safe-area-inset-bottom));
+      left: 50%;
+      transform: translateX(-50%);
+      border: 1px solid rgba(224, 191, 132, 0.72);
+      background: rgba(16, 16, 16, 0.7);
+      color: #f9edd8;
+      border-radius: 999px;
+      padding: 10px 22px;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      display: none;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+
+    .skip-btn {
+      position: absolute;
+      top: calc(14px + env(safe-area-inset-top));
+      right: calc(14px + env(safe-area-inset-right));
+      z-index: 7;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      background: rgba(0, 0, 0, 0.42);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 13px;
+      letter-spacing: 0.06em;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      opacity: 0;
+      transform: translateY(-6px);
+      pointer-events: none;
+      transition: opacity 200ms ease, transform 200ms ease;
+    }
+
+    .center-state {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 72px;
+      height: 72px;
+      margin-left: -36px;
+      margin-top: -36px;
+      z-index: 6;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: rgba(255, 255, 255, 0.95);
+      font-size: 28px;
+      line-height: 1;
+      background: rgba(0, 0, 0, 0.34);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      opacity: 0;
+      transform: scale(0.92);
+      transition: opacity 200ms ease, transform 200ms ease;
+      pointer-events: none;
+      cursor: pointer;
+    }
+
+    .dy-progress {
+      --progress: 0%;
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: calc(10px + env(safe-area-inset-bottom));
+      z-index: 7;
+      padding: 8px 0;
+      opacity: 0;
+      transform: translateY(6px);
+      pointer-events: none;
+      transition: opacity 200ms ease, transform 200ms ease;
+    }
+
+    .stage.ui-visible .center-state {
+      opacity: 1;
+      transform: scale(1);
+      pointer-events: auto;
+    }
+
+    .stage.ui-visible .dy-progress {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .stage.ui-visible .skip-btn {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 11px;
+      line-height: 1;
+      letter-spacing: 0.04em;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+      pointer-events: none;
+    }
+
+    .progress-range {
+      appearance: none;
+      width: 100%;
+      height: 20px;
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      touch-action: pan-y;
+    }
+
+    .progress-range:focus {
+      outline: none;
+    }
+
+    .progress-range::-webkit-slider-runnable-track {
+      height: 3px;
+      border-radius: 999px;
+      background:
+        linear-gradient(90deg, var(--accent) var(--progress), rgba(255, 255, 255, 0.28) var(--progress));
+    }
+
+    .progress-range::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #fff8eb;
+      border: 1px solid rgba(224, 191, 132, 0.95);
+      margin-top: -3.5px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    }
+
+    .progress-range::-moz-range-track {
+      height: 3px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.28);
+    }
+
+    .progress-range::-moz-range-progress {
+      height: 3px;
+      border-radius: 999px;
+      background: var(--accent);
+    }
+
+    .progress-range::-moz-range-thumb {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #fff8eb;
+      border: 1px solid rgba(224, 191, 132, 0.95);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    }
+  </style>
+</head>
+<body>
+  <main class="stage" id="stage" aria-label="开场视频">
+    <video
+      id="bgVideo"
+      class="video-bg"
+      preload="none"
+      playsinline
+      webkit-playsinline
+      x5-playsinline
+      x5-video-player-type="h5"
+      muted
+      aria-hidden="true"
+      tabindex="-1"
+    ></video>
+
+    <div class="frost-layer" aria-hidden="true"></div>
+
+    <video
+      id="introVideo"
+      class="video-main"
+      preload="auto"
+      playsinline
+      webkit-playsinline
+      x5-playsinline
+      x5-video-player-type="h5"
+      muted
+    >
+      <source src="./video/hls/index.m3u8" type="application/vnd.apple.mpegurl" />
+      您的浏览器不支持视频播放。
+    </video>
+
+    <button id="skipBtn" class="skip-btn" type="button" aria-label="跳过视频">跳过</button>
+    <button id="startBtn" class="start-btn" type="button">点击播放</button>
+
+    <button id="centerState" class="center-state" type="button" aria-label="播放或暂停">❚❚</button>
+
+    <div id="dyProgress" class="dy-progress" aria-label="播放进度">
+      <div class="progress-meta" aria-hidden="true">
+        <span id="currentTimeText">00:00</span>
+        <span id="totalTimeText">00:00</span>
+      </div>
+      <input
+        id="progressRange"
+        class="progress-range"
+        type="range"
+        min="0"
+        max="100"
+        step="0.1"
+        value="0"
+        aria-label="播放进度"
+      />
+    </div>
+  </main>
+
+  <script src="./vendor/hls.min.js"></script>
+  <script>
+    (function () {
+      var targetUrl = "http://xclycj.com/";
+      var streamUrl = "./video/hls/index.m3u8";
+      var stage = document.getElementById("stage");
+      var video = document.getElementById("introVideo");
+      var bgVideo = document.getElementById("bgVideo");
+      var startBtn = document.getElementById("startBtn");
+      var skipBtn = document.getElementById("skipBtn");
+      var centerState = document.getElementById("centerState");
+      var dyProgress = document.getElementById("dyProgress");
+      var progressRange = document.getElementById("progressRange");
+      var currentTimeText = document.getElementById("currentTimeText");
+      var totalTimeText = document.getElementById("totalTimeText");
+
+      var redirected = false;
+      var endThreshold = 0.25;
+      var endWatchTimer = null;
+      var warmStarted = false;
+      var isUserSeeking = false;
+      var hasBootstrapped = false;
+      var uiHideTimer = null;
+      var uiIdleMs = 3500;
+      var mainHls = null;
+      var bgMirrorReady = false;
+
+      function goNext() {
+        if (redirected) return;
+        redirected = true;
+
+        if (endWatchTimer) {
+          window.clearInterval(endWatchTimer);
+          endWatchTimer = null;
+        }
+
+        try {
+          video.pause();
+          bgVideo.pause();
+        } catch (e) {}
+
+        if (mainHls) {
+          mainHls.destroy();
+          mainHls = null;
+        }
+
+        window.location.replace(targetUrl);
+      }
+
+      function attachStream(videoEl) {
+        return new Promise(function (resolve, reject) {
+          if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
+            videoEl.src = streamUrl;
+            resolve();
+            return;
+          }
+
+          if (window.Hls && window.Hls.isSupported()) {
+            var hls = new window.Hls({
+              enableWorker: true,
+              lowLatencyMode: false,
+              backBufferLength: 30,
+              maxBufferLength: 8,
+              maxMaxBufferLength: 16
+            });
+
+            mainHls = hls;
+
+            hls.loadSource(streamUrl);
+            hls.attachMedia(videoEl);
+            hls.on(window.Hls.Events.MANIFEST_PARSED, function () {
+              resolve();
+            });
+            hls.on(window.Hls.Events.ERROR, function (_, data) {
+              if (data && data.fatal) {
+                reject(new Error("HLS fatal error: " + data.type));
+              }
+            });
+            return;
+          }
+
+          reject(new Error("This browser does not support HLS playback"));
+        });
+      }
+
+      function ensureBgMirror() {
+        if (bgMirrorReady) return;
+        var captureFn = video.captureStream || video.mozCaptureStream;
+        if (typeof captureFn !== "function") return;
+        try {
+          bgVideo.srcObject = captureFn.call(video);
+          bgMirrorReady = true;
+          stage.classList.add("bg-ready");
+        } catch (e) {}
+      }
+
+      function warmTarget() {
+        if (warmStarted) return;
+        warmStarted = true;
+
+        if (window.fetch) {
+          fetch(targetUrl, {
+            mode: "no-cors",
+            credentials: "include"
+          }).catch(function () {});
+        }
+
+        try {
+          var img = new Image();
+          img.src = targetUrl + (targetUrl.indexOf("?") === -1 ? "?" : "&") + "_warm=" + Date.now();
+        } catch (e) {}
+      }
+
+      function isNearEnd() {
+        var duration = video.duration;
+        return Number.isFinite(duration) && duration > 0 && video.currentTime >= duration - endThreshold;
+      }
+
+      function checkAndGoNext() {
+        if (redirected) return;
+        if (isNearEnd()) {
+          goNext();
+        }
+      }
+
+      function startEndWatch() {
+        if (endWatchTimer) return;
+        endWatchTimer = window.setInterval(checkAndGoNext, 200);
+      }
+
+      function syncBgToMain() {
+        // Background now mirrors the main video stream, no manual time sync required.
+      }
+
+      function playBgVideo() {
+        ensureBgMirror();
+        if (!bgMirrorReady) return;
+        bgVideo.muted = true;
+        bgVideo.play().catch(function () {});
+      }
+
+      function clearUiTimer() {
+        if (!uiHideTimer) return;
+        window.clearTimeout(uiHideTimer);
+        uiHideTimer = null;
+      }
+
+      function hideUi() {
+        clearUiTimer();
+        stage.classList.remove("ui-visible");
+      }
+
+      function scheduleUiHide() {
+        clearUiTimer();
+        uiHideTimer = window.setTimeout(function () {
+          if (!isUserSeeking) {
+            hideUi();
+          } else {
+            scheduleUiHide();
+          }
+        }, uiIdleMs);
+      }
+
+      function updateCenterStateByPlayback() {
+        centerState.textContent = video.paused ? "▶" : "❚❚";
+      }
+
+      function showUi() {
+        stage.classList.add("ui-visible");
+        updateCenterStateByPlayback();
+        scheduleUiHide();
+      }
+
+      function formatTime(sec) {
+        if (!Number.isFinite(sec) || sec < 0) return "00:00";
+        var whole = Math.floor(sec);
+        var m = Math.floor(whole / 60);
+        var s = whole % 60;
+        return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+      }
+
+      function setProgressUI(current, duration) {
+        var safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+        var safeCurrent = Number.isFinite(current) && current > 0 ? current : 0;
+        var progress = safeDuration > 0 ? (safeCurrent / safeDuration) * 100 : 0;
+        var capped = Math.min(100, Math.max(0, progress));
+
+        progressRange.value = capped.toFixed(2);
+        dyProgress.style.setProperty("--progress", capped + "%");
+        currentTimeText.textContent = formatTime(safeCurrent);
+        totalTimeText.textContent = formatTime(safeDuration);
+      }
+
+      function seekByPercent(percent) {
+        var duration = video.duration;
+        if (!Number.isFinite(duration) || duration <= 0) return;
+
+        var p = Math.min(100, Math.max(0, percent));
+        var nextTime = (p / 100) * duration;
+
+        try {
+          video.currentTime = nextTime;
+        } catch (e) {}
+
+        setProgressUI(nextTime, duration);
+      }
+
+      function updateRangeEnabled() {
+        var duration = video.duration;
+        progressRange.disabled = !(Number.isFinite(duration) && duration > 0);
+      }
+
+      function togglePlayPause() {
+        if (video.paused) {
+          playBgVideo();
+          video.play().catch(function () {});
+        } else {
+          video.pause();
+        }
+      }
+
+      function tryAutoplay(resetToStart) {
+        if (resetToStart) {
+          video.currentTime = 0;
+        }
+
+        warmTarget();
+
+        video.play().then(function () {
+          hasBootstrapped = true;
+          startBtn.style.display = "none";
+          startEndWatch();
+          syncBgToMain();
+          setProgressUI(video.currentTime, video.duration);
+          updateCenterStateByPlayback();
+          playBgVideo();
+          hideUi();
+        }).catch(function () {
+          startBtn.style.display = "inline-flex";
+          updateCenterStateByPlayback();
+        });
+      }
+
+      function startFromGesture() {
+        warmTarget();
+        video.muted = false;
+
+        video.play().then(function () {
+          hasBootstrapped = true;
+          startBtn.style.display = "none";
+          startEndWatch();
+          syncBgToMain();
+          setProgressUI(video.currentTime, video.duration);
+          updateCenterStateByPlayback();
+          playBgVideo();
+          hideUi();
+        }).catch(function () {
+          video.muted = true;
+          video.play().then(function () {
+            hasBootstrapped = true;
+            startBtn.style.display = "none";
+            startEndWatch();
+            syncBgToMain();
+            setProgressUI(video.currentTime, video.duration);
+            updateCenterStateByPlayback();
+            playBgVideo();
+            hideUi();
+          });
+        });
+      }
+
+      video.removeAttribute("loop");
+      video.loop = false;
+      bgVideo.removeAttribute("loop");
+      bgVideo.loop = false;
+
+      video.addEventListener("ended", goNext);
+      video.addEventListener("timeupdate", function () {
+        checkAndGoNext();
+        updateRangeEnabled();
+
+        if (!isUserSeeking) {
+          setProgressUI(video.currentTime, video.duration);
+        }
+      });
+      video.addEventListener("play", function () {
+        playBgVideo();
+        updateCenterStateByPlayback();
+        scheduleUiHide();
+      });
+      video.addEventListener("pause", function () {
+        if (!redirected && !bgVideo.paused) {
+          bgVideo.pause();
+        }
+        updateCenterStateByPlayback();
+        showUi();
+      });
+      video.addEventListener("loadedmetadata", function () {
+        updateRangeEnabled();
+        setProgressUI(video.currentTime, video.duration);
+      });
+      video.addEventListener("durationchange", function () {
+        updateRangeEnabled();
+        setProgressUI(video.currentTime, video.duration);
+      });
+
+      video.addEventListener("error", function () {
+        window.location.replace(targetUrl);
+      });
+
+      startBtn.addEventListener("click", startFromGesture, { passive: true });
+      skipBtn.addEventListener("click", goNext, { passive: true });
+      centerState.addEventListener("click", function (evt) {
+        evt.stopPropagation();
+        togglePlayPause();
+        showUi();
+      });
+
+      stage.addEventListener("click", function (evt) {
+        if (evt.target.closest("#skipBtn") || evt.target.closest("#startBtn") || evt.target.closest("#dyProgress")) {
+          return;
+        }
+        showUi();
+      }, { passive: true });
+
+      progressRange.addEventListener("pointerdown", function (evt) {
+        evt.stopPropagation();
+        isUserSeeking = true;
+        showUi();
+      });
+      progressRange.addEventListener("touchstart", function (evt) {
+        evt.stopPropagation();
+        isUserSeeking = true;
+        showUi();
+      }, { passive: true });
+      progressRange.addEventListener("input", function () {
+        isUserSeeking = true;
+        seekByPercent(parseFloat(progressRange.value));
+        showUi();
+      });
+      progressRange.addEventListener("change", function () {
+        seekByPercent(parseFloat(progressRange.value));
+        isUserSeeking = false;
+        showUi();
+      });
+      progressRange.addEventListener("pointerup", function () {
+        seekByPercent(parseFloat(progressRange.value));
+        isUserSeeking = false;
+        showUi();
+      });
+      progressRange.addEventListener("pointercancel", function () {
+        isUserSeeking = false;
+        showUi();
+      });
+      progressRange.addEventListener("touchend", function () {
+        seekByPercent(parseFloat(progressRange.value));
+        isUserSeeking = false;
+        showUi();
+      }, { passive: true });
+      progressRange.addEventListener("click", function (evt) {
+        evt.stopPropagation();
+      }, { passive: true });
+
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden && video.paused && !redirected) {
+          tryAutoplay(!hasBootstrapped);
+        }
+      });
+
+      window.addEventListener("pageshow", function () {
+        if (!redirected && video.paused) {
+          tryAutoplay(!hasBootstrapped);
+        }
+      });
+
+      setProgressUI(0, 0);
+      updateRangeEnabled();
+      updateCenterStateByPlayback();
+      hideUi();
+
+      attachStream(video).then(function () {
+        tryAutoplay(true);
+      }).catch(function () {
+        startBtn.style.display = "inline-flex";
+      });
+    })();
+  </script>
+</body>
+</html>
