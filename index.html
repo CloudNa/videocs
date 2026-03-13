@@ -73,10 +73,14 @@
 
     .video-main {
       position: absolute;
-      inset: 0;
+      left: 50%;
+      top: 50%;
       width: 100vw;
       height: 100vh;
+      transform: translate(-50%, -50%);
       object-fit: contain;
+      object-position: center center;
+      display: block;
       background: transparent;
       z-index: 3;
       filter: drop-shadow(0 12px 22px rgba(0, 0, 0, 0.45));
@@ -124,26 +128,65 @@
       position: absolute;
       left: 50%;
       top: 50%;
-      width: 72px;
-      height: 72px;
-      margin-left: -36px;
-      margin-top: -36px;
+      width: 78px;
+      height: 78px;
       z-index: 6;
       border-radius: 50%;
       display: grid;
       place-items: center;
-      color: rgba(255, 255, 255, 0.95);
-      font-size: 28px;
-      line-height: 1;
-      background: rgba(0, 0, 0, 0.34);
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(0, 0, 0, 0.42);
+      border: 1px solid rgba(255, 255, 255, 0.24);
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
       opacity: 0;
-      transform: scale(0.92);
+      transform: translate(-50%, -50%) scale(0.92);
       transition: opacity 200ms ease, transform 200ms ease;
       pointer-events: none;
       cursor: pointer;
+    }
+
+    .center-state .icon-play {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 0;
+      height: 0;
+      border-top: 12px solid transparent;
+      border-bottom: 12px solid transparent;
+      border-left: 18px solid rgba(255, 255, 255, 0.97);
+      transform: translate(-42%, -50%);
+      opacity: 0;
+      transition: opacity 140ms ease;
+    }
+
+    .center-state .icon-pause {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 22px;
+      height: 22px;
+      transform: translate(-50%, -50%);
+      opacity: 0;
+      transition: opacity 140ms ease;
+    }
+
+    .center-state .icon-pause::before,
+    .center-state .icon-pause::after {
+      content: "";
+      position: absolute;
+      top: 1px;
+      width: 6px;
+      height: 20px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.97);
+    }
+
+    .center-state .icon-pause::before {
+      left: 3px;
+    }
+
+    .center-state .icon-pause::after {
+      right: 3px;
     }
 
     .dy-progress {
@@ -162,8 +205,16 @@
 
     .stage.ui-visible .center-state {
       opacity: 1;
-      transform: scale(1);
+      transform: translate(-50%, -50%) scale(1);
       pointer-events: auto;
+    }
+
+    .center-state[data-state="play"] .icon-play {
+      opacity: 1;
+    }
+
+    .center-state[data-state="pause"] .icon-pause {
+      opacity: 1;
     }
 
     .stage.ui-visible .dy-progress {
@@ -281,7 +332,10 @@
     <button id="skipBtn" class="skip-btn" type="button" aria-label="跳过视频">跳过</button>
     <button id="startBtn" class="start-btn" type="button">点击播放</button>
 
-    <button id="centerState" class="center-state" type="button" aria-label="播放或暂停">❚❚</button>
+    <button id="centerState" class="center-state" type="button" data-state="pause" aria-label="暂停">
+      <span class="icon-play" aria-hidden="true"></span>
+      <span class="icon-pause" aria-hidden="true"></span>
+    </button>
 
     <div id="dyProgress" class="dy-progress" aria-label="播放进度">
       <div class="progress-meta" aria-hidden="true">
@@ -327,6 +381,7 @@
       var uiIdleMs = 3500;
       var mainHls = null;
       var bgMirrorReady = false;
+      var soundUnlocked = false;
 
       function goNext() {
         if (redirected) return;
@@ -442,6 +497,16 @@
         bgVideo.play().catch(function () {});
       }
 
+      function unlockSoundFromGesture() {
+        if (soundUnlocked) return;
+        soundUnlocked = true;
+        video.muted = false;
+        try {
+          video.volume = 1;
+        } catch (e) {}
+        video.play().catch(function () {});
+      }
+
       function clearUiTimer() {
         if (!uiHideTimer) return;
         window.clearTimeout(uiHideTimer);
@@ -465,7 +530,9 @@
       }
 
       function updateCenterStateByPlayback() {
-        centerState.textContent = video.paused ? "▶" : "❚❚";
+        var isPaused = video.paused;
+        centerState.dataset.state = isPaused ? "play" : "pause";
+        centerState.setAttribute("aria-label", isPaused ? "播放" : "暂停");
       }
 
       function showUi() {
@@ -545,8 +612,8 @@
       }
 
       function startFromGesture() {
+        unlockSoundFromGesture();
         warmTarget();
-        video.muted = false;
 
         video.play().then(function () {
           hasBootstrapped = true;
@@ -615,6 +682,7 @@
       skipBtn.addEventListener("click", goNext, { passive: true });
       centerState.addEventListener("click", function (evt) {
         evt.stopPropagation();
+        unlockSoundFromGesture();
         togglePlayPause();
         showUi();
       });
@@ -623,16 +691,19 @@
         if (evt.target.closest("#skipBtn") || evt.target.closest("#startBtn") || evt.target.closest("#dyProgress")) {
           return;
         }
+        unlockSoundFromGesture();
         showUi();
       }, { passive: true });
 
       progressRange.addEventListener("pointerdown", function (evt) {
         evt.stopPropagation();
+        unlockSoundFromGesture();
         isUserSeeking = true;
         showUi();
       });
       progressRange.addEventListener("touchstart", function (evt) {
         evt.stopPropagation();
+        unlockSoundFromGesture();
         isUserSeeking = true;
         showUi();
       }, { passive: true });
