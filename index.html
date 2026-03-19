@@ -4,16 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
-  <link rel="dns-prefetch" href="//xclycj.com" />
-  <link rel="preconnect" href="http://xclycj.com" />
-  <title>绿源三十年茶源结茶缘</title>
+  <title>视频加载中</title>
   <link rel="stylesheet" href="./styles/main.css" />
 </head>
 <body>
   <main class="stage" id="stage" aria-label="开场视频">
     <canvas id="bgCanvas" class="webgl-bg" aria-hidden="true"></canvas>
-
     <div class="frost-layer" aria-hidden="true"></div>
 
     <video
@@ -26,12 +24,11 @@
       x5-video-player-type="h5"
       muted
     >
-      <source src="./video/hls/index.m3u8" type="application/vnd.apple.mpegurl" />
       您的浏览器不支持视频播放。
     </video>
 
     <button id="skipBtn" class="skip-btn" type="button" aria-label="跳过视频">跳过</button>
-    <button id="startBtn" class="start-btn" type="button" aria-live="polite">正在加载视频...</button>
+    <button id="startBtn" class="start-btn" type="button" aria-live="polite">正在加载配置...</button>
 
     <button id="centerState" class="center-state" type="button" data-state="pause" aria-label="暂停">
       <span class="icon-play" aria-hidden="true"></span>
@@ -56,7 +53,6 @@
     </div>
   </main>
 
-  <script src="./vendor/hls.min.js"></script>
   <script src="./scripts/main.js"></script>
 </body>
 </html>
