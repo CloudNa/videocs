@@ -4,3 +4,5 @@ ffmpeg/
 *.mov
 *.mkv
 *.avi
+__pycache__/
+*.pyc
