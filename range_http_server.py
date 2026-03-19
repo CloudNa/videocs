@@ -3,6 +3,7 @@ import copy
 import gzip
 import hashlib
 import http.cookiejar
+import ipaddress
 import json
 import os
 import re
@@ -491,6 +492,44 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
 
     _range = None
 
+    def _config_events_enabled(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        override = params.get("sse", [None])[0]
+        if override is not None:
+            value = str(override).strip().lower()
+            if value in ("1", "true", "yes", "on"):
+                return True
+            if value in ("0", "false", "no", "off"):
+                return False
+
+        raw_host = (
+            self.headers.get("X-Forwarded-Host")
+            or self.headers.get("Host")
+            or ""
+        )
+        raw_host = raw_host.split(",", 1)[0].strip()
+        hostname = urllib.parse.urlsplit("//" + raw_host).hostname or ""
+        hostname = hostname.strip().lower()
+
+        if not hostname:
+            return False
+        if hostname in ("localhost", "127.0.0.1", "::1"):
+            return True
+        if hostname.endswith(".local"):
+            return True
+
+        try:
+            ip_value = ipaddress.ip_address(hostname)
+            return ip_value.is_loopback or ip_value.is_private
+        except ValueError:
+            return False
+
+    def _build_runtime_config_payload(self):
+        payload = copy.deepcopy(_load_runtime_config())
+        payload["configEventsEnabled"] = self._config_events_enabled()
+        return payload
+
     def do_HEAD(self):
         parsed = urllib.parse.urlsplit(self.path)
         if parsed.path == RUNTIME_CONFIG_PATH:
@@ -518,7 +557,10 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def handle_runtime_config(self, head_only=False):
-        payload = json.dumps(_load_runtime_config(), ensure_ascii=False).encode("utf-8")
+        payload = json.dumps(
+            self._build_runtime_config_payload(),
+            ensure_ascii=False,
+        ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -528,6 +570,13 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(payload)
 
     def handle_config_events(self):
+        if not self._config_events_enabled():
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Config-Events", "disabled")
+            self.end_headers()
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")

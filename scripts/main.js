@@ -5,6 +5,7 @@
   var defaultConfig = {
     pageTitle: "绿源三十年茶源结茶缘",
     redirectUrl: "http://xclycj.com/",
+    configEventsEnabled: null,
     video: {
       provider: "bilibili",
       url: "",
@@ -62,6 +63,7 @@
     return {
       pageTitle: source.pageTitle,
       redirectUrl: source.redirectUrl,
+      configEventsEnabled: typeof source.configEventsEnabled === "boolean" ? source.configEventsEnabled : null,
       video: {
         provider: source.video && source.video.provider ? source.video.provider : defaultConfig.video.provider,
         url: source.video && source.video.url ? source.video.url : defaultConfig.video.url,
@@ -103,6 +105,9 @@
     }
     if (typeof source.targetUrl === "string" && source.targetUrl.trim()) {
       normalized.redirectUrl = source.targetUrl.trim();
+    }
+    if (typeof source.configEventsEnabled === "boolean") {
+      normalized.configEventsEnabled = source.configEventsEnabled;
     }
 
     if (typeof videoSource.provider === "string" && videoSource.provider.trim()) {
@@ -174,8 +179,51 @@
     }, 120);
   }
 
+  function isLocalDevHost() {
+    var hostname = String(window.location.hostname || "").trim().toLowerCase();
+    var match = null;
+    var octets = null;
+    var first = 0;
+    var second = 0;
+
+    if (!hostname) return false;
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") {
+      return true;
+    }
+    if (/\\.local$/i.test(hostname)) {
+      return true;
+    }
+
+    match = hostname.match(/^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$/);
+    if (!match) {
+      return false;
+    }
+
+    octets = match.slice(1).map(function (value) {
+      return parseInt(value, 10);
+    });
+
+    if (octets.some(function (value) { return value < 0 || value > 255; })) {
+      return false;
+    }
+
+    first = octets[0];
+    second = octets[1];
+    return first === 10
+      || first === 127
+      || (first === 192 && second === 168)
+      || (first === 172 && second >= 16 && second <= 31);
+  }
+
+  function shouldWatchConfigChanges() {
+    if (typeof runtimeConfig.configEventsEnabled === "boolean") {
+      return runtimeConfig.configEventsEnabled;
+    }
+    return isLocalDevHost();
+  }
+
   function watchConfigChanges() {
-    if (configEventSource || !("EventSource" in window)) return;
+    if (configEventSource || !("EventSource" in window) || !shouldWatchConfigChanges()) return;
 
     configEventSource = new window.EventSource(configEventsUrl);
 
@@ -209,6 +257,12 @@
           applyRuntimeConfig(nextConfig);
         }
       }).catch(function () {});
+    });
+
+    configEventSource.addEventListener("error", function () {
+      if (!configEventSource || shouldWatchConfigChanges()) return;
+      configEventSource.close();
+      configEventSource = null;
     });
   }
 
