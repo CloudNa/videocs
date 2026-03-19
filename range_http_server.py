@@ -21,6 +21,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "video-config.json")
 RUNTIME_CONFIG_PATH = "/config/runtime.json"
 CONFIG_EVENTS_PATH = "/events/config"
 VIDEO_PROXY_PATH = "/proxy/video"
+VIDEO_SOURCE_PATH = "/video/source"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -487,6 +488,15 @@ def _clear_video_cache(video_config):
         _clear_feishu_cache(video_config)
 
 
+def _supports_direct_delivery(video_config):
+    provider = video_config["provider"]
+    if provider == "bilibili":
+        return True
+    if provider == "direct" and not video_config.get("headers"):
+        return True
+    return False
+
+
 class RangeRequestHandler(SimpleHTTPRequestHandler):
     """Static file server with byte-range support and multi-platform video proxy."""
 
@@ -530,6 +540,22 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
         payload["configEventsEnabled"] = self._config_events_enabled()
         return payload
 
+    def _requested_video_config(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        runtime_config = _load_runtime_config()
+        video_config = copy.deepcopy(runtime_config["video"])
+
+        if params.get("provider"):
+            video_config["provider"] = _resolve_provider(params["provider"][0], video_config["url"])
+        if params.get("url"):
+            video_config["url"] = str(params["url"][0]).strip()
+        if params.get("quality"):
+            video_config["quality"] = str(params["quality"][0]).strip()
+
+        video_config["provider"] = _resolve_provider(video_config.get("provider"), video_config["url"])
+        return video_config, params
+
     def do_HEAD(self):
         parsed = urllib.parse.urlsplit(self.path)
         if parsed.path == RUNTIME_CONFIG_PATH:
@@ -537,6 +563,9 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == CONFIG_EVENTS_PATH:
             self.send_error(405, "Config events do not support HEAD")
+            return
+        if parsed.path == VIDEO_SOURCE_PATH:
+            self.handle_video_source(head_only=True)
             return
         if parsed.path == VIDEO_PROXY_PATH:
             self.handle_video_proxy(head_only=True)
@@ -550,6 +579,9 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == CONFIG_EVENTS_PATH:
             self.handle_config_events()
+            return
+        if parsed.path == VIDEO_SOURCE_PATH:
+            self.handle_video_source(head_only=False)
             return
         if parsed.path == VIDEO_PROXY_PATH:
             self.handle_video_proxy(head_only=False)
@@ -619,20 +651,46 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def handle_video_source(self, head_only=False):
+        video_config, params = self._requested_video_config()
+        force_refresh = str(params.get("refresh", [""])[0]).strip().lower() in ("1", "true", "yes", "on")
+
+        payload = {
+            "deliveryMode": "proxy",
+            "provider": video_config["provider"],
+            "url": VIDEO_PROXY_PATH,
+        }
+
+        try:
+            if _supports_direct_delivery(video_config):
+                if video_config["provider"] == "direct":
+                    direct_url = str(video_config["url"]).strip()
+                else:
+                    resolved = _resolve_video_source(video_config, force_refresh=force_refresh)
+                    direct_url = str(resolved["stream_url"]).strip()
+                    if resolved.get("expires_at"):
+                        payload["expiresAt"] = resolved["expires_at"]
+
+                if not direct_url:
+                    raise ValueError("Resolved direct video URL is empty")
+
+                payload["deliveryMode"] = "direct"
+                payload["url"] = direct_url
+        except Exception as exc:
+            self.send_error(502, f"Video source error: {exc}")
+            return
+
+        raw_payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw_payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(raw_payload)
+
     def handle_video_proxy(self, head_only=False):
-        parsed = urllib.parse.urlsplit(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-        runtime_config = _load_runtime_config()
-        video_config = copy.deepcopy(runtime_config["video"])
-
-        if params.get("provider"):
-            video_config["provider"] = _resolve_provider(params["provider"][0], video_config["url"])
-        if params.get("url"):
-            video_config["url"] = str(params["url"][0]).strip()
-        if params.get("quality"):
-            video_config["quality"] = str(params["quality"][0]).strip()
-
-        video_config["provider"] = _resolve_provider(video_config.get("provider"), video_config["url"])
+        video_config, _params = self._requested_video_config()
 
         try:
             upstream = None

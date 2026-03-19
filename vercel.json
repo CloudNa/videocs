@@ -4,6 +4,9 @@
     "api/config.py": {
       "maxDuration": 10
     },
+    "api/source.py": {
+      "maxDuration": 10
+    },
     "api/events.py": {
       "maxDuration": 60
     },
@@ -19,6 +22,10 @@
     {
       "source": "/events/config",
       "destination": "/api/events"
+    },
+    {
+      "source": "/video/source",
+      "destination": "/api/source"
     },
     {
       "source": "/proxy/video",

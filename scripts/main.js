@@ -1,6 +1,7 @@
-(function () {
+﻿(function () {
   var runtimeConfigUrl = "/config/runtime.json";
   var configEventsUrl = "/events/config";
+  var videoSourceUrl = "/video/source";
   var proxyVideoUrl = "/proxy/video";
   var defaultConfig = {
     pageTitle: "绿源三十年茶源结茶缘",
@@ -16,7 +17,6 @@
 
   var stage = document.getElementById("stage");
   var video = document.getElementById("introVideo");
-  var bgCanvas = document.getElementById("bgCanvas");
   var startBtn = document.getElementById("startBtn");
   var skipBtn = document.getElementById("skipBtn");
   var centerState = document.getElementById("centerState");
@@ -32,6 +32,7 @@
   var soundUnlocked = false;
   var isUserSeeking = false;
   var hasBootstrapped = false;
+  var pageOpenId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   var sourceNonce = 0;
   var streamConnected = false;
   var pendingResumeTime = 0;
@@ -39,6 +40,7 @@
   var uiIdleMs = 3500;
   var autoplayRetryMs = 1200;
   var reconnectRetryMs = 1800;
+  var proxyWarmupWaitMs = 320;
   var uiHideTimer = null;
   var autoplayRetryTimer = null;
   var reconnectTimer = null;
@@ -46,18 +48,14 @@
   var configEventSource = null;
   var configReloadPending = false;
   var warmStarted = false;
-
-  var gl = null;
-  var glProgram = null;
-  var glBuffer = null;
-  var glTexture = null;
-  var glLocPosition = null;
-  var glLocTexture = null;
-  var glLocVideoSize = null;
-  var glLocCanvasSize = null;
-  var glReady = false;
-  var glRaf = 0;
-  var useWebglBackground = true;
+  var pendingGesturePlayback = false;
+  var gesturePlaybackRequired = false;
+  var hasStartedPlayback = false;
+  var playRequestPending = false;
+  var autoplayGuardTimer = null;
+  var connectAttemptId = 0;
+  var connectInFlight = false;
+  var playbackPreconnectOrigin = "";
 
   function cloneConfig(source) {
     return {
@@ -173,7 +171,7 @@
   function reloadForConfigChange() {
     if (configReloadPending || redirected) return;
     configReloadPending = true;
-    showLoadingState("配置已更新，正在刷新...");
+    showLoadingState("配置已更新，正在刷新...", "loading");
     window.setTimeout(function () {
       window.location.reload();
     }, 120);
@@ -190,11 +188,11 @@
     if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") {
       return true;
     }
-    if (/\\.local$/i.test(hostname)) {
+    if (/\.local$/i.test(hostname)) {
       return true;
     }
 
-    match = hostname.match(/^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$/);
+    match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
     if (!match) {
       return false;
     }
@@ -228,9 +226,10 @@
     configEventSource = new window.EventSource(configEventsUrl);
 
     configEventSource.addEventListener("config", function (event) {
+      var payload = null;
+
       if (redirected || configReloadPending) return;
 
-      var payload = null;
       try {
         payload = JSON.parse(event.data);
       } catch (error) {
@@ -266,6 +265,45 @@
     });
   }
 
+  function setPlaybackState(state) {
+    stage.dataset.playback = state;
+    updateAmbientBackdrop();
+  }
+
+  function updateAmbientBackdrop() {
+    var time = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    var duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
+    var progress = Math.max(0, Math.min(1, time / duration));
+    var phaseA = Math.sin(time * 0.22);
+    var phaseB = Math.cos(time * 0.17);
+    var phaseC = Math.sin(time * 0.09 + 0.8);
+    var playback = stage.dataset.playback || "loading";
+    var energy = 0.62;
+    var highlight = 0.6;
+
+    if (playback === "playing") {
+      energy = 0.9;
+      highlight = 0.68;
+    } else if (playback === "paused" || playback === "prompt") {
+      energy = 0.72;
+      highlight = 0.64;
+    } else if (playback === "buffering") {
+      energy = 0.66;
+      highlight = 0.7;
+    }
+
+    if (video.readyState < 3) {
+      energy -= 0.05;
+    }
+
+    stage.style.setProperty("--ambient-energy", energy.toFixed(3));
+    stage.style.setProperty("--ambient-highlight", (highlight + phaseC * 0.04 + progress * 0.03).toFixed(3));
+    stage.style.setProperty("--ambient-shift-x", (phaseA * 18 + progress * 16).toFixed(2) + "px");
+    stage.style.setProperty("--ambient-shift-y", (phaseB * 14 - progress * 9).toFixed(2) + "px");
+    stage.style.setProperty("--ambient-tilt", (phaseA * 3.4).toFixed(2) + "deg");
+    stage.style.setProperty("--ambient-scale", (1 + phaseB * 0.018).toFixed(3));
+  }
+
   function goNext() {
     if (redirected) return;
     redirected = true;
@@ -273,35 +311,82 @@
     clearUiTimer();
     clearAutoplayRetry();
     clearReconnectRetry();
+    clearAutoplayPromptGuard();
 
     if (endWatchTimer) {
       window.clearInterval(endWatchTimer);
       endWatchTimer = null;
     }
 
+    if (configEventSource) {
+      configEventSource.close();
+      configEventSource = null;
+    }
+
     try {
       video.pause();
     } catch (error) {}
 
-    stopWebglLoop();
-    destroyWebgl();
     window.location.replace(targetUrl);
   }
 
   function warmTarget() {
+    var img = null;
+
     if (warmStarted) return;
     warmStarted = true;
+
+    if (window.fetch) {
+      fetch(targetUrl, {
+        mode: "no-cors",
+        credentials: "include"
+      }).catch(function () {});
+    }
+
+    try {
+      img = new Image();
+      img.src = targetUrl + (targetUrl.indexOf("?") === -1 ? "?" : "&") + "_warm=" + Date.now();
+    } catch (error) {}
   }
 
-  function showLoadingState(text) {
+  function showLoadingState(text, mode) {
     if (text) {
       startBtn.textContent = text;
     }
+    startBtn.dataset.mode = mode || "loading";
     startBtn.style.display = "inline-flex";
   }
 
   function hideLoadingState() {
+    delete startBtn.dataset.mode;
     startBtn.style.display = "none";
+  }
+
+  function showTapToPlayPrompt() {
+    clearAutoplayPromptGuard();
+    gesturePlaybackRequired = true;
+    pendingGesturePlayback = false;
+    setPlaybackState("prompt");
+    showLoadingState("轻触屏幕，开始播放", "prompt");
+  }
+
+  function clearAutoplayPromptGuard() {
+    if (!autoplayGuardTimer) return;
+    window.clearTimeout(autoplayGuardTimer);
+    autoplayGuardTimer = null;
+  }
+
+  function scheduleAutoplayPromptGuard() {
+    clearAutoplayPromptGuard();
+    autoplayGuardTimer = window.setTimeout(function () {
+      autoplayGuardTimer = null;
+      if (redirected || hasStartedPlayback || soundUnlocked || gesturePlaybackRequired || pendingGesturePlayback) {
+        return;
+      }
+      if (video.paused && video.readyState >= 2) {
+        showTapToPlayPrompt();
+      }
+    }, 900);
   }
 
   function clearUiTimer() {
@@ -366,25 +451,115 @@
     }, reconnectRetryMs);
   }
 
-  function buildProxyUrl(forceFresh) {
+  function buildVideoSourceUrl(forceFresh) {
     if (forceFresh) {
       sourceNonce += 1;
     }
+    return videoSourceUrl
+      + "?open=" + encodeURIComponent(pageOpenId)
+      + "&_=" + sourceNonce
+      + (forceFresh ? "&refresh=1" : "");
+  }
+
+  function buildProxyUrl() {
     return proxyVideoUrl + "?_=" + sourceNonce;
   }
 
+  function wait(ms) {
+    return new Promise(function (resolve) {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  function warmProxyUrl(url) {
+    return fetch(url, {
+      cache: "no-store",
+      headers: {
+        Range: "bytes=0-0"
+      }
+    }).then(function (response) {
+      if (!response.ok && response.status !== 206) {
+        throw new Error("Warm request failed");
+      }
+      return response.arrayBuffer().catch(function () {
+        return null;
+      });
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function normalizePlaybackSource(payload) {
+    var source = payload && typeof payload === "object" ? payload : {};
+    var deliveryMode = source.deliveryMode === "direct" ? "direct" : "proxy";
+    var resolvedUrl = typeof source.url === "string" && source.url.trim() ? source.url.trim() : "";
+
+    if (!resolvedUrl) {
+      resolvedUrl = deliveryMode === "direct" ? "" : buildProxyUrl();
+    }
+
+    return {
+      deliveryMode: deliveryMode,
+      provider: typeof source.provider === "string" ? source.provider : runtimeConfig.video.provider,
+      url: resolvedUrl,
+      expiresAt: Number.isFinite(source.expiresAt) ? source.expiresAt : null
+    };
+  }
+
+  function resolvePlaybackSource(forceFresh) {
+    return fetch(buildVideoSourceUrl(forceFresh), {
+      cache: "no-store"
+    }).then(function (response) {
+      if (!response.ok) {
+        throw new Error("Video source request failed");
+      }
+      return response.json();
+    }).then(normalizePlaybackSource);
+  }
+
+  function getUrlOrigin(url) {
+    try {
+      return new window.URL(url, window.location.href).origin;
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function ensurePlaybackPreconnect(url) {
+    var origin = getUrlOrigin(url);
+    var link = null;
+
+    if (!origin || origin === window.location.origin || origin === playbackPreconnectOrigin) {
+      return;
+    }
+
+    playbackPreconnectOrigin = origin;
+    link = document.createElement("link");
+    link.rel = "preconnect";
+    link.href = origin;
+    link.crossOrigin = "";
+    document.head.appendChild(link);
+  }
+
+  function updateDeliveryMode(sourceInfo) {
+    stage.dataset.delivery = sourceInfo && sourceInfo.deliveryMode ? sourceInfo.deliveryMode : "proxy";
+  }
+
   function applyPendingResume() {
+    var nextTime = 0;
+    var duration = 0;
+    var capped = 0;
+
     if (video.readyState < 1) return;
 
-    var nextTime = Number.isFinite(pendingResumeTime) ? pendingResumeTime : 0;
+    nextTime = Number.isFinite(pendingResumeTime) ? pendingResumeTime : 0;
     if (nextTime <= 0) {
       pendingResumeTime = 0;
       return;
     }
 
-    var duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : nextTime;
-    var capped = Math.max(0, Math.min(nextTime, Math.max(0, duration - endThreshold)));
-
+    duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : nextTime;
+    capped = Math.max(0, Math.min(nextTime, Math.max(0, duration - endThreshold)));
     pendingResumeTime = 0;
 
     try {
@@ -393,28 +568,92 @@
   }
 
   function connectVideo(forceFresh, resetToStart) {
-    clearReconnectRetry();
+    var attemptId = 0;
+    var sourceInfo = null;
+    var shouldWarmProxy = false;
 
+    if (connectInFlight && !forceFresh) {
+      return;
+    }
+
+    clearReconnectRetry();
+    playRequestPending = false;
+    connectInFlight = true;
+    attemptId = ++connectAttemptId;
     pendingResumeTime = resetToStart ? 0 : (Number.isFinite(video.currentTime) ? video.currentTime : pendingResumeTime);
-    showLoadingState(forceFresh ? "正在重连视频..." : "正在连接视频...");
+    showLoadingState(forceFresh ? "正在重连视频..." : "正在连接视频...", "loading");
+    setPlaybackState("loading");
 
     try {
       video.pause();
     } catch (error) {}
 
-    try {
-      video.src = buildProxyUrl(forceFresh);
-      video.load();
-      streamConnected = true;
-      if (resetToStart) {
-        pendingResumeTime = 0;
+    function beginLoad() {
+      if (attemptId !== connectAttemptId || redirected) {
+        return;
       }
-      tryAutoplay(false);
-    } catch (error) {
-      streamConnected = false;
-      showLoadingState("视频连接失败，正在重试...");
-      scheduleReconnect(resetToStart);
+
+      try {
+        updateDeliveryMode(sourceInfo);
+        if (sourceInfo.deliveryMode === "direct") {
+          ensurePlaybackPreconnect(sourceInfo.url);
+        }
+
+        video.src = sourceInfo.url;
+        video.load();
+        streamConnected = true;
+        if (resetToStart) {
+          pendingResumeTime = 0;
+        }
+        tryAutoplay(false, { fromGesture: pendingGesturePlayback && soundUnlocked });
+        if (!soundUnlocked) {
+          scheduleAutoplayPromptGuard();
+        }
+        connectInFlight = false;
+      } catch (error) {
+        streamConnected = false;
+        connectInFlight = false;
+        clearAutoplayPromptGuard();
+        showLoadingState("视频连接失败，正在重试...", "loading");
+        setPlaybackState("loading");
+        scheduleReconnect(resetToStart);
+      }
     }
+
+    resolvePlaybackSource(forceFresh).then(function (nextSourceInfo) {
+      if (attemptId !== connectAttemptId || redirected) {
+        connectInFlight = false;
+        return;
+      }
+
+      sourceInfo = nextSourceInfo;
+      shouldWarmProxy = sourceInfo.deliveryMode === "proxy"
+        && !hasStartedPlayback
+        && !pendingGesturePlayback
+        && !soundUnlocked;
+
+      if (!shouldWarmProxy) {
+        beginLoad();
+        return;
+      }
+
+      Promise.race([
+        warmProxyUrl(sourceInfo.url),
+        wait(proxyWarmupWaitMs)
+      ]).finally(beginLoad);
+    }).catch(function () {
+      if (attemptId !== connectAttemptId || redirected) {
+        connectInFlight = false;
+        return;
+      }
+
+      streamConnected = false;
+      connectInFlight = false;
+      clearAutoplayPromptGuard();
+      showLoadingState("视频连接失败，正在重试...", "loading");
+      setPlaybackState("loading");
+      scheduleReconnect(resetToStart);
+    });
   }
 
   function isNearEnd() {
@@ -437,9 +676,9 @@
   function formatTime(sec) {
     if (!Number.isFinite(sec) || sec < 0) return "00:00";
     var whole = Math.floor(sec);
-    var m = Math.floor(whole / 60);
-    var s = whole % 60;
-    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    var minutes = Math.floor(whole / 60);
+    var seconds = whole % 60;
+    return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
   }
 
   function setProgressUI(current, duration) {
@@ -461,24 +700,20 @@
 
   function seekByPercent(percent) {
     var duration = video.duration;
+    var clamped = 0;
+    var nextTime = 0;
+
     if (!Number.isFinite(duration) || duration <= 0) return;
 
-    var p = Math.max(0, Math.min(100, percent));
-    var nextTime = (p / 100) * duration;
+    clamped = Math.max(0, Math.min(100, percent));
+    nextTime = (clamped / 100) * duration;
 
     try {
       video.currentTime = nextTime;
     } catch (error) {}
 
     setProgressUI(nextTime, duration);
-  }
-
-  function togglePlayPause() {
-    if (video.paused) {
-      video.play().catch(function () {});
-      return;
-    }
-    video.pause();
+    updateAmbientBackdrop();
   }
 
   function unlockSoundFromGesture() {
@@ -488,11 +723,50 @@
     try {
       video.volume = 1;
     } catch (error) {}
-    video.play().catch(function () {});
   }
 
-  function tryAutoplay(resetToStart) {
+  function isAutoplayBlockedError(error) {
+    var name = String(error && error.name || "");
+    var message = String(error && error.message || "").toLowerCase();
+    return name === "NotAllowedError"
+      || message.indexOf("gesture") !== -1
+      || message.indexOf("user activation") !== -1
+      || message.indexOf("allowed") !== -1;
+  }
+
+  function requestGesturePlayback(resetToStart) {
+    clearAutoplayPromptGuard();
+    unlockSoundFromGesture();
+    pendingGesturePlayback = true;
+    gesturePlaybackRequired = false;
+    tryAutoplay(Boolean(resetToStart), { fromGesture: true });
+  }
+
+  function togglePlayPause() {
+    if (video.paused) {
+      tryAutoplay(false, { fromGesture: true });
+      return;
+    }
+    video.pause();
+  }
+
+  function tryAutoplay(resetToStart, options) {
+    var playbackPromise = null;
+    var fromGesture = false;
+
+    options = options || {};
+    fromGesture = Boolean(options.fromGesture);
+
     if (!streamConnected) {
+      if (connectInFlight) {
+        if (fromGesture) {
+          pendingGesturePlayback = true;
+        }
+        return;
+      }
+      if (fromGesture) {
+        pendingGesturePlayback = true;
+      }
       connectVideo(false, resetToStart);
       return;
     }
@@ -501,233 +775,97 @@
       pendingResumeTime = 0;
     }
 
-    warmTarget();
-    showLoadingState("正在加载视频...");
+    if (playRequestPending) {
+      return;
+    }
 
-    video.play().then(function () {
+    if (!fromGesture && gesturePlaybackRequired) {
+      return;
+    }
+
+    warmTarget();
+    if (!gesturePlaybackRequired || fromGesture) {
+      showLoadingState(hasStartedPlayback ? "正在继续加载视频..." : "正在加载视频...", "loading");
+      setPlaybackState("buffering");
+    }
+
+    try {
+      playRequestPending = true;
+      playbackPromise = video.play();
+    } catch (error) {
+      playRequestPending = false;
+      clearAutoplayPromptGuard();
+      if (isAutoplayBlockedError(error)) {
+        clearAutoplayRetry();
+        showTapToPlayPrompt();
+        return;
+      }
+      if (fromGesture) {
+        pendingGesturePlayback = true;
+        showLoadingState("正在加载视频...", "loading");
+        setPlaybackState("buffering");
+        return;
+      }
+      showLoadingState("正在加载视频...", "loading");
+      setPlaybackState("buffering");
+      scheduleAutoplayRetry();
+      return;
+    }
+
+    if (!playbackPromise || typeof playbackPromise.then !== "function") {
+      clearAutoplayPromptGuard();
+      playRequestPending = false;
       hasBootstrapped = true;
+      hasStartedPlayback = true;
+      pendingGesturePlayback = false;
+      gesturePlaybackRequired = false;
       clearAutoplayRetry();
       hideLoadingState();
       updateRangeEnabled();
       setProgressUI(video.currentTime, video.duration);
       updateCenterStateByPlayback();
       startEndWatch();
-      startWebglLoop();
+      setPlaybackState("playing");
       hideUi();
-    }).catch(function () {
-      showLoadingState("正在等待浏览器允许播放...");
+      return;
+    }
+
+    playbackPromise.then(function () {
+      clearAutoplayPromptGuard();
+      playRequestPending = false;
+      hasBootstrapped = true;
+      hasStartedPlayback = true;
+      pendingGesturePlayback = false;
+      gesturePlaybackRequired = false;
+      clearAutoplayRetry();
+      hideLoadingState();
+      updateRangeEnabled();
+      setProgressUI(video.currentTime, video.duration);
+      updateCenterStateByPlayback();
+      startEndWatch();
+      setPlaybackState("playing");
+      hideUi();
+    }).catch(function (error) {
+      clearAutoplayPromptGuard();
+      playRequestPending = false;
+      if (isAutoplayBlockedError(error)) {
+        clearAutoplayRetry();
+        showTapToPlayPrompt();
+        return;
+      }
+
+      if (fromGesture) {
+        pendingGesturePlayback = true;
+        showLoadingState("正在加载视频...", "loading");
+        setPlaybackState("buffering");
+        return;
+      }
+
+      showLoadingState("正在加载视频...", "loading");
+      setPlaybackState("buffering");
       updateCenterStateByPlayback();
       scheduleAutoplayRetry();
     });
-  }
-
-  function createShader(type, source) {
-    var shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      gl.deleteShader(shader);
-      return null;
-    }
-
-    return shader;
-  }
-
-  function initWebglBackground() {
-    if (!useWebglBackground) return false;
-    if (glReady) return true;
-
-    gl = bgCanvas.getContext("webgl", {
-      alpha: false,
-      antialias: false,
-      depth: false,
-      stencil: false,
-      premultipliedAlpha: false,
-      preserveDrawingBuffer: false
-    });
-
-    if (!gl) return false;
-
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-
-    var vsSource = [
-      "attribute vec2 a_position;",
-      "varying vec2 v_uv;",
-      "void main(){",
-      "  v_uv = (a_position + 1.0) * 0.5;",
-      "  gl_Position = vec4(a_position, 0.0, 1.0);",
-      "}"
-    ].join("");
-
-    var fsSource = [
-      "precision mediump float;",
-      "uniform sampler2D u_texture;",
-      "uniform vec2 u_videoSize;",
-      "uniform vec2 u_canvasSize;",
-      "varying vec2 v_uv;",
-      "vec2 coverUV(vec2 uv){",
-      "  float va = u_videoSize.x / max(u_videoSize.y, 1.0);",
-      "  float ca = u_canvasSize.x / max(u_canvasSize.y, 1.0);",
-      "  vec2 outUV = uv;",
-      "  if (ca > va) {",
-      "    float s = va / ca;",
-      "    outUV.y = (uv.y - 0.5) * s + 0.5;",
-      "  } else {",
-      "    float s = ca / va;",
-      "    outUV.x = (uv.x - 0.5) * s + 0.5;",
-      "  }",
-      "  return clamp(outUV, 0.0, 1.0);",
-      "}",
-      "void main(){",
-      "  vec2 uv = coverUV(v_uv);",
-      "  vec2 px = 1.0 / max(u_videoSize, vec2(1.0));",
-      "  vec3 c = texture2D(u_texture, uv).rgb * 0.06;",
-      "  c += texture2D(u_texture, uv + vec2(px.x * 18.0, 0.0)).rgb * 0.11;",
-      "  c += texture2D(u_texture, uv - vec2(px.x * 18.0, 0.0)).rgb * 0.11;",
-      "  c += texture2D(u_texture, uv + vec2(0.0, px.y * 18.0)).rgb * 0.11;",
-      "  c += texture2D(u_texture, uv - vec2(0.0, px.y * 18.0)).rgb * 0.11;",
-      "  c += texture2D(u_texture, uv + vec2(px.x * 32.0, 0.0)).rgb * 0.08;",
-      "  c += texture2D(u_texture, uv - vec2(px.x * 32.0, 0.0)).rgb * 0.08;",
-      "  c += texture2D(u_texture, uv + vec2(0.0, px.y * 32.0)).rgb * 0.08;",
-      "  c += texture2D(u_texture, uv - vec2(0.0, px.y * 32.0)).rgb * 0.08;",
-      "  c += texture2D(u_texture, uv + vec2(px.x * 24.0, px.y * 24.0)).rgb * 0.05;",
-      "  c += texture2D(u_texture, uv - vec2(px.x * 24.0, px.y * 24.0)).rgb * 0.05;",
-      "  c += texture2D(u_texture, uv + vec2(-px.x * 24.0, px.y * 24.0)).rgb * 0.05;",
-      "  c += texture2D(u_texture, uv + vec2(px.x * 24.0, -px.y * 24.0)).rgb * 0.05;",
-      "  float luma = dot(c, vec3(0.299, 0.587, 0.114));",
-      "  c = mix(c, vec3(luma), 0.16);",
-      "  c *= vec3(0.88, 0.89, 0.92);",
-      "  c *= 1.46;",
-      "  c += vec3(0.02, 0.02, 0.024);",
-      "  float dCenter = distance(v_uv, vec2(0.50, 0.50));",
-      "  float vignette = smoothstep(1.08, 0.12, dCenter);",
-      "  c *= mix(0.96, 1.08, vignette);",
-      "  c = clamp(c, 0.0, 1.0);",
-      "  gl_FragColor = vec4(c, 1.0);",
-      "}"
-    ].join("");
-
-    var vertexShader = createShader(gl.VERTEX_SHADER, vsSource);
-    var fragmentShader = createShader(gl.FRAGMENT_SHADER, fsSource);
-    if (!vertexShader || !fragmentShader) return false;
-
-    glProgram = gl.createProgram();
-    gl.attachShader(glProgram, vertexShader);
-    gl.attachShader(glProgram, fragmentShader);
-    gl.linkProgram(glProgram);
-
-    if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
-      return false;
-    }
-
-    glBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-      -1, -1,
-       1, -1,
-      -1,  1,
-       1,  1
-    ]), gl.STATIC_DRAW);
-
-    glTexture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, glTexture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-
-    glLocPosition = gl.getAttribLocation(glProgram, "a_position");
-    glLocTexture = gl.getUniformLocation(glProgram, "u_texture");
-    glLocVideoSize = gl.getUniformLocation(glProgram, "u_videoSize");
-    glLocCanvasSize = gl.getUniformLocation(glProgram, "u_canvasSize");
-
-    resizeBgCanvas();
-    glReady = true;
-    stage.classList.add("bg-ready");
-    return true;
-  }
-
-  function resizeBgCanvas() {
-    if (!bgCanvas) return;
-
-    var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-    var renderScale = 0.28;
-    var w = Math.max(1, Math.floor(bgCanvas.clientWidth * dpr * renderScale));
-    var h = Math.max(1, Math.floor(bgCanvas.clientHeight * dpr * renderScale));
-
-    if (bgCanvas.width !== w || bgCanvas.height !== h) {
-      bgCanvas.width = w;
-      bgCanvas.height = h;
-    }
-  }
-
-  function drawWebglBackground() {
-    if (!glReady || !gl || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
-      return;
-    }
-
-    resizeBgCanvas();
-    gl.viewport(0, 0, bgCanvas.width, bgCanvas.height);
-    gl.useProgram(glProgram);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
-    gl.enableVertexAttribArray(glLocPosition);
-    gl.vertexAttribPointer(glLocPosition, 2, gl.FLOAT, false, 0, 0);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, glTexture);
-
-    try {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-    } catch (error) {
-      return;
-    }
-
-    gl.uniform1i(glLocTexture, 0);
-    gl.uniform2f(glLocVideoSize, video.videoWidth, video.videoHeight);
-    gl.uniform2f(glLocCanvasSize, bgCanvas.width, bgCanvas.height);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  }
-
-  function webglTick() {
-    if (redirected) return;
-
-    if (!document.hidden) {
-      drawWebglBackground();
-    }
-
-    glRaf = window.requestAnimationFrame(webglTick);
-  }
-
-  function startWebglLoop() {
-    if (!initWebglBackground()) return;
-    if (glRaf) return;
-    glRaf = window.requestAnimationFrame(webglTick);
-  }
-
-  function stopWebglLoop() {
-    if (!glRaf) return;
-    window.cancelAnimationFrame(glRaf);
-    glRaf = 0;
-  }
-
-  function destroyWebgl() {
-    if (!gl) return;
-
-    if (glTexture) gl.deleteTexture(glTexture);
-    if (glBuffer) gl.deleteBuffer(glBuffer);
-    if (glProgram) gl.deleteProgram(glProgram);
-
-    glTexture = null;
-    glBuffer = null;
-    glProgram = null;
-    gl = null;
-    glReady = false;
-  }
-
-  function syncBgToMain() {
-    drawWebglBackground();
   }
 
   video.removeAttribute("loop");
@@ -737,43 +875,57 @@
     applyPendingResume();
     updateRangeEnabled();
     setProgressUI(video.currentTime, video.duration);
+    updateAmbientBackdrop();
   });
 
   video.addEventListener("durationchange", function () {
     applyPendingResume();
     updateRangeEnabled();
     setProgressUI(video.currentTime, video.duration);
+    updateAmbientBackdrop();
   });
 
   video.addEventListener("canplay", function () {
     applyPendingResume();
-    hideLoadingState();
-    syncBgToMain();
-    startWebglLoop();
+    if (pendingGesturePlayback && video.paused && !playRequestPending) {
+      tryAutoplay(false, { fromGesture: true });
+      return;
+    }
+    if (!gesturePlaybackRequired) {
+      hideLoadingState();
+    }
+    updateAmbientBackdrop();
   });
 
   video.addEventListener("waiting", function () {
-    if (!redirected) {
-      showLoadingState("正在缓冲视频...");
+    if (!redirected && !gesturePlaybackRequired) {
+      showLoadingState(hasStartedPlayback ? "网络波动，正在继续播放..." : "正在加载视频...", "loading");
+      setPlaybackState("buffering");
     }
   });
 
   video.addEventListener("stalled", function () {
-    if (!redirected) {
-      showLoadingState("视频缓冲中...");
+    if (!redirected && !gesturePlaybackRequired) {
+      showLoadingState(hasStartedPlayback ? "网络波动，正在继续播放..." : "正在加载视频...", "loading");
+      setPlaybackState("buffering");
     }
   });
 
   video.addEventListener("playing", function () {
+    clearAutoplayPromptGuard();
+    playRequestPending = false;
+    hasStartedPlayback = true;
+    pendingGesturePlayback = false;
+    gesturePlaybackRequired = false;
     hideLoadingState();
     updateCenterStateByPlayback();
-    startWebglLoop();
+    setPlaybackState("playing");
   });
 
   video.addEventListener("timeupdate", function () {
     checkAndGoNext();
-    syncBgToMain();
     updateRangeEnabled();
+    updateAmbientBackdrop();
 
     if (!isUserSeeking) {
       setProgressUI(video.currentTime, video.duration);
@@ -785,13 +937,16 @@
     hideLoadingState();
     updateCenterStateByPlayback();
     startEndWatch();
-    startWebglLoop();
+    setPlaybackState("playing");
     scheduleUiHide();
   });
 
   video.addEventListener("pause", function () {
-    syncBgToMain();
+    if (pendingGesturePlayback || gesturePlaybackRequired) {
+      return;
+    }
     updateCenterStateByPlayback();
+    setPlaybackState("paused");
     showUi();
   });
 
@@ -800,12 +955,22 @@
   video.addEventListener("error", function () {
     if (redirected) return;
 
+    clearAutoplayPromptGuard();
+    playRequestPending = false;
     streamConnected = false;
-    showLoadingState("视频异常，正在重试...");
+    if (!gesturePlaybackRequired) {
+      showLoadingState("视频异常，正在重试...", "loading");
+      setPlaybackState("loading");
+    }
     scheduleReconnect(false);
   });
 
   skipBtn.addEventListener("click", goNext, { passive: true });
+
+  startBtn.addEventListener("click", function (event) {
+    event.stopPropagation();
+    requestGesturePlayback(!hasBootstrapped);
+  });
 
   centerState.addEventListener("click", function (event) {
     event.stopPropagation();
@@ -815,11 +980,15 @@
   });
 
   stage.addEventListener("click", function (event) {
-    if (event.target.closest("#skipBtn") || event.target.closest("#dyProgress")) {
+    if (event.target.closest("#skipBtn") || event.target.closest("#dyProgress") || event.target.closest("#centerState")) {
       return;
     }
 
-    unlockSoundFromGesture();
+    if (gesturePlaybackRequired || pendingGesturePlayback || (!hasStartedPlayback && video.paused)) {
+      requestGesturePlayback(!hasBootstrapped);
+      return;
+    }
+
     showUi();
   }, { passive: true });
 
@@ -882,7 +1051,6 @@
     }
   });
 
-  window.addEventListener("resize", resizeBgCanvas, { passive: true });
   window.addEventListener("beforeunload", function () {
     if (!configEventSource) return;
     configEventSource.close();
@@ -890,11 +1058,13 @@
   });
 
   function boot() {
+    setPlaybackState("loading");
     setProgressUI(0, 0);
     updateRangeEnabled();
     updateCenterStateByPlayback();
+    updateAmbientBackdrop();
     hideUi();
-    showLoadingState("正在加载配置...");
+    showLoadingState("正在加载配置...", "loading");
 
     loadRuntimeConfig().then(function (config) {
       applyRuntimeConfig(config);
@@ -902,7 +1072,7 @@
       applyRuntimeConfig(defaultConfig);
     }).finally(function () {
       watchConfigChanges();
-      showLoadingState("正在连接视频...");
+      showLoadingState("正在连接视频...", "loading");
       connectVideo(false, true);
     });
   }
