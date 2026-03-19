@@ -69,6 +69,10 @@ def _fetch_text(url, headers):
     return body.decode("utf-8", errors="ignore")
 
 
+def _fetch_json(url, headers):
+    return json.loads(_fetch_text(url, headers))
+
+
 def _read_raw_config():
     if not os.path.exists(CONFIG_PATH):
         return {}, None, DEFAULT_CONFIG_VERSION
@@ -194,18 +198,25 @@ def _quality_to_bilibili_qn(quality):
     return mapping.get(value, "64")
 
 
-def _parse_bilibili_state(html):
-    playinfo_raw = _extract_match(
-        r"window\.__playinfo__\s*=\s*(\{.*?\})\s*</script>",
-        html,
-        "Bilibili play info",
-    )
-    state_raw = _extract_match(
-        r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\});",
-        html,
-        "Bilibili initial state",
-    )
-    return json.loads(playinfo_raw), json.loads(state_raw)
+def _extract_bilibili_video_ref(page_url):
+    parsed = urllib.parse.urlsplit(page_url)
+    page_number = 1
+    query = urllib.parse.parse_qs(parsed.query)
+    raw_page = query.get("p", [None])[0]
+    if raw_page and str(raw_page).isdigit():
+        page_number = max(1, int(raw_page))
+
+    path = parsed.path or ""
+    bvid_match = re.search(r"/video/(BV[0-9A-Za-z]+)", path, re.I)
+    aid_match = re.search(r"/video/av(\d+)", path, re.I)
+    ref = {"page": page_number}
+    if bvid_match:
+        ref["bvid"] = bvid_match.group(1)
+        return ref
+    if aid_match:
+        ref["aid"] = aid_match.group(1)
+        return ref
+    raise ValueError("Could not extract Bilibili bvid or aid from URL")
 
 
 def _resolve_bilibili_video(video_config, force_refresh=False):
@@ -218,32 +229,51 @@ def _resolve_bilibili_video(video_config, force_refresh=False):
         if cached and not force_refresh and time.time() < cached["expires_at"]:
             return cached
 
-    page_headers = {
+    api_headers = {
         "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "zh-CN,zh;q=0.9",
         "Accept-Encoding": "gzip",
-        "Referer": "https://www.bilibili.com/",
+        "Referer": page_url,
+        "Origin": "https://www.bilibili.com",
     }
-    html = _fetch_text(page_url, page_headers)
-    page_playinfo, page_state = _parse_bilibili_state(html)
+    video_ref = _extract_bilibili_video_ref(page_url)
+    id_params = {}
+    if video_ref.get("bvid"):
+        id_params["bvid"] = video_ref["bvid"]
+    elif video_ref.get("aid"):
+        id_params["avid"] = video_ref["aid"]
+    else:
+        raise ValueError("Could not resolve Bilibili video identifier")
 
-    bvid = (
-        page_state.get("bvid")
-        or page_state.get("videoData", {}).get("bvid")
-        or _extract_match(r"/video/(BV[0-9A-Za-z]+)", page_url, "Bilibili bvid")
-    )
-    cid = (
-        page_state.get("videoData", {}).get("cid")
-        or page_state.get("cidMap", {}).get(bvid, {}).get("cids", {}).get("1")
-    )
+    pagelist_url = "https://api.bilibili.com/x/player/pagelist?" + urllib.parse.urlencode(id_params)
+    pagelist_payload = _fetch_json(pagelist_url, api_headers)
+    if pagelist_payload.get("code") != 0:
+        raise ValueError(
+            "Bilibili pagelist API failed: "
+            f"code={pagelist_payload.get('code')} message={pagelist_payload.get('message')}"
+        )
 
-    if not bvid or not cid:
-        raise ValueError("Could not resolve Bilibili bvid or cid")
+    pages = pagelist_payload.get("data") or []
+    if not pages:
+        raise ValueError("Bilibili pagelist API returned no pages")
 
-    api_url = "https://api.bilibili.com/x/player/playurl?" + urllib.parse.urlencode(
+    selected_page = None
+    requested_page = video_ref.get("page", 1)
+    for page_info in pages:
+        if int(page_info.get("page") or 0) == requested_page:
+            selected_page = page_info
+            break
+    if selected_page is None:
+        selected_page = pages[0]
+
+    cid = selected_page.get("cid")
+    if not cid:
+        raise ValueError("Could not resolve Bilibili cid")
+
+    playurl_params = dict(id_params)
+    playurl_params.update(
         {
-            "bvid": bvid,
             "cid": str(cid),
             "qn": qn,
             "fnver": "0",
@@ -252,22 +282,14 @@ def _resolve_bilibili_video(video_config, force_refresh=False):
             "platform": "html5",
         }
     )
-    api_headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/json,text/plain,*/*",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Referer": page_url,
-        "Origin": "https://www.bilibili.com",
-    }
-    payload = json.loads(_fetch_text(api_url, api_headers))
+    playurl_url = "https://api.bilibili.com/x/player/playurl?" + urllib.parse.urlencode(playurl_params)
+    payload = _fetch_json(playurl_url, api_headers)
     if payload.get("code") != 0:
         raise ValueError(
             f"Bilibili playurl API failed: code={payload.get('code')} message={payload.get('message')}"
         )
 
     durl_list = payload.get("data", {}).get("durl", [])
-    if not durl_list:
-        durl_list = page_playinfo.get("data", {}).get("durl", [])
     if not durl_list:
         raise ValueError("Bilibili did not return a progressive MP4 stream")
 
