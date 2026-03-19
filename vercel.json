@@ -1,30 +1,28 @@
 {
-  "headers": [
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/config.py": {
+      "maxDuration": 10
+    },
+    "api/events.py": {
+      "maxDuration": 60
+    },
+    "api/video.py": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
     {
-      "source": "/video/hls/(.*)\\.m3u8",
-      "headers": [
-        {
-          "key": "Content-Type",
-          "value": "application/vnd.apple.mpegurl"
-        },
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=0, must-revalidate"
-        }
-      ]
+      "source": "/config/runtime.json",
+      "destination": "/api/config"
     },
     {
-      "source": "/video/hls/(.*)\\.ts",
-      "headers": [
-        {
-          "key": "Content-Type",
-          "value": "video/mp2t"
-        },
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=31536000, immutable"
-        }
-      ]
+      "source": "/events/config",
+      "destination": "/api/events"
+    },
+    {
+      "source": "/proxy/video",
+      "destination": "/api/video"
     }
   ]
 }

@@ -1,0 +1,11 @@
+/*
+!/api
+!/api/**
+!/index.html
+!/range_http_server.py
+!/scripts
+!/scripts/**
+!/styles
+!/styles/**
+!/vercel.json
+!/video-config.json
