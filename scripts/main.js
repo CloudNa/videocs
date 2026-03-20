@@ -56,6 +56,8 @@
   var connectAttemptId = 0;
   var connectInFlight = false;
   var playbackPreconnectOrigin = "";
+  var bufferingHintTimer = null;
+  var bufferingHintDelayMs = 650;
 
   function cloneConfig(source) {
     return {
@@ -358,12 +360,14 @@
   }
 
   function hideLoadingState() {
+    clearBufferingHintTimer();
     delete startBtn.dataset.mode;
     startBtn.style.display = "none";
   }
 
   function showTapToPlayPrompt() {
     clearAutoplayPromptGuard();
+    clearBufferingHintTimer();
     gesturePlaybackRequired = true;
     pendingGesturePlayback = false;
     setPlaybackState("prompt");
@@ -387,6 +391,37 @@
         showTapToPlayPrompt();
       }
     }, 900);
+  }
+
+  function clearBufferingHintTimer() {
+    if (!bufferingHintTimer) return;
+    window.clearTimeout(bufferingHintTimer);
+    bufferingHintTimer = null;
+  }
+
+  function shouldShowBufferingHint() {
+    if (redirected || gesturePlaybackRequired || pendingGesturePlayback) {
+      return false;
+    }
+    if (!streamConnected || video.ended || video.seeking || isUserSeeking) {
+      return false;
+    }
+    if (hasStartedPlayback) {
+      return false;
+    }
+    return video.readyState < 3 || video.networkState === video.NETWORK_LOADING;
+  }
+
+  function scheduleBufferingHint() {
+    clearBufferingHintTimer();
+    bufferingHintTimer = window.setTimeout(function () {
+      bufferingHintTimer = null;
+      if (!shouldShowBufferingHint()) {
+        return;
+      }
+      showLoadingState("正在加载视频...", "loading");
+      setPlaybackState("buffering");
+    }, bufferingHintDelayMs);
   }
 
   function clearUiTimer() {
@@ -723,6 +758,44 @@
     try {
       video.volume = 1;
     } catch (error) {}
+    if (!video.paused) {
+      video.play().catch(function () {});
+    }
+  }
+
+  function removeGlobalSoundUnlockListeners() {
+    if (!soundGestureEventsBound) return;
+    soundGestureEventsBound = false;
+    document.removeEventListener("pointerdown", handleGlobalSoundGesture, true);
+    document.removeEventListener("touchstart", handleGlobalSoundGesture, true);
+    document.removeEventListener("mousedown", handleGlobalSoundGesture, true);
+    document.removeEventListener("keydown", handleGlobalSoundGesture, true);
+    document.removeEventListener("click", handleGlobalSoundGesture, true);
+  }
+
+  function handleGlobalSoundGesture() {
+    if (redirected || soundUnlocked) {
+      removeGlobalSoundUnlockListeners();
+      return;
+    }
+
+    unlockSoundFromGesture();
+
+    if (streamConnected || hasStartedPlayback || pendingGesturePlayback || gesturePlaybackRequired) {
+      video.play().catch(function () {});
+    }
+
+    removeGlobalSoundUnlockListeners();
+  }
+
+  function bindGlobalSoundUnlockListeners() {
+    if (soundGestureEventsBound) return;
+    soundGestureEventsBound = true;
+    document.addEventListener("pointerdown", handleGlobalSoundGesture, true);
+    document.addEventListener("touchstart", handleGlobalSoundGesture, true);
+    document.addEventListener("mousedown", handleGlobalSoundGesture, true);
+    document.addEventListener("keydown", handleGlobalSoundGesture, true);
+    document.addEventListener("click", handleGlobalSoundGesture, true);
   }
 
   function isAutoplayBlockedError(error) {
@@ -784,8 +857,8 @@
     }
 
     warmTarget();
-    if (!gesturePlaybackRequired || fromGesture) {
-      showLoadingState(hasStartedPlayback ? "正在继续加载视频..." : "正在加载视频...", "loading");
+    if (!hasStartedPlayback && (!gesturePlaybackRequired || fromGesture)) {
+      showLoadingState("正在加载视频...", "loading");
       setPlaybackState("buffering");
     }
 
@@ -802,18 +875,23 @@
       }
       if (fromGesture) {
         pendingGesturePlayback = true;
-        showLoadingState("正在加载视频...", "loading");
-        setPlaybackState("buffering");
+        if (!hasStartedPlayback) {
+          showLoadingState("正在加载视频...", "loading");
+          setPlaybackState("buffering");
+        }
         return;
       }
-      showLoadingState("正在加载视频...", "loading");
-      setPlaybackState("buffering");
+      if (!hasStartedPlayback) {
+        showLoadingState("正在加载视频...", "loading");
+        setPlaybackState("buffering");
+      }
       scheduleAutoplayRetry();
       return;
     }
 
     if (!playbackPromise || typeof playbackPromise.then !== "function") {
       clearAutoplayPromptGuard();
+      clearBufferingHintTimer();
       playRequestPending = false;
       hasBootstrapped = true;
       hasStartedPlayback = true;
@@ -832,6 +910,7 @@
 
     playbackPromise.then(function () {
       clearAutoplayPromptGuard();
+      clearBufferingHintTimer();
       playRequestPending = false;
       hasBootstrapped = true;
       hasStartedPlayback = true;
@@ -847,6 +926,7 @@
       hideUi();
     }).catch(function (error) {
       clearAutoplayPromptGuard();
+      clearBufferingHintTimer();
       playRequestPending = false;
       if (isAutoplayBlockedError(error)) {
         clearAutoplayRetry();
@@ -856,13 +936,17 @@
 
       if (fromGesture) {
         pendingGesturePlayback = true;
-        showLoadingState("正在加载视频...", "loading");
-        setPlaybackState("buffering");
+        if (!hasStartedPlayback) {
+          showLoadingState("正在加载视频...", "loading");
+          setPlaybackState("buffering");
+        }
         return;
       }
 
-      showLoadingState("正在加载视频...", "loading");
-      setPlaybackState("buffering");
+      if (!hasStartedPlayback) {
+        showLoadingState("正在加载视频...", "loading");
+        setPlaybackState("buffering");
+      }
       updateCenterStateByPlayback();
       scheduleAutoplayRetry();
     });
@@ -897,22 +981,25 @@
     updateAmbientBackdrop();
   });
 
+  video.addEventListener("seeking", function () {
+    clearBufferingHintTimer();
+  });
+
   video.addEventListener("waiting", function () {
     if (!redirected && !gesturePlaybackRequired) {
-      showLoadingState(hasStartedPlayback ? "网络波动，正在继续播放..." : "正在加载视频...", "loading");
-      setPlaybackState("buffering");
+      scheduleBufferingHint();
     }
   });
 
   video.addEventListener("stalled", function () {
     if (!redirected && !gesturePlaybackRequired) {
-      showLoadingState(hasStartedPlayback ? "网络波动，正在继续播放..." : "正在加载视频...", "loading");
-      setPlaybackState("buffering");
+      scheduleBufferingHint();
     }
   });
 
   video.addEventListener("playing", function () {
     clearAutoplayPromptGuard();
+    clearBufferingHintTimer();
     playRequestPending = false;
     hasStartedPlayback = true;
     pendingGesturePlayback = false;
@@ -956,6 +1043,7 @@
     if (redirected) return;
 
     clearAutoplayPromptGuard();
+    clearBufferingHintTimer();
     playRequestPending = false;
     streamConnected = false;
     if (!gesturePlaybackRequired) {
@@ -966,6 +1054,20 @@
   });
 
   skipBtn.addEventListener("click", goNext, { passive: true });
+
+  stage.addEventListener("pointerdown", function (event) {
+    if (event.target.closest("#dyProgress")) {
+      return;
+    }
+    unlockSoundFromGesture();
+  }, { passive: true });
+
+  stage.addEventListener("touchstart", function (event) {
+    if (event.target.closest("#dyProgress")) {
+      return;
+    }
+    unlockSoundFromGesture();
+  }, { passive: true });
 
   startBtn.addEventListener("click", function (event) {
     event.stopPropagation();
@@ -980,6 +1082,8 @@
   });
 
   stage.addEventListener("click", function (event) {
+    unlockSoundFromGesture();
+
     if (event.target.closest("#skipBtn") || event.target.closest("#dyProgress") || event.target.closest("#centerState")) {
       return;
     }
@@ -1064,6 +1168,7 @@
     updateCenterStateByPlayback();
     updateAmbientBackdrop();
     hideUi();
+    bindGlobalSoundUnlockListeners();
     showLoadingState("正在加载配置...", "loading");
 
     loadRuntimeConfig().then(function (config) {
@@ -1079,3 +1184,12 @@
 
   boot();
 })();
+
+
+
+
+
+
+
+
+
